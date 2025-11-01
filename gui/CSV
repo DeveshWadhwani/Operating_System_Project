@@ -1,0 +1,60 @@
+def import_csv(self):
+        fn = filedialog.askopenfilename(filetypes=[("CSV files","*.csv"),("All files","*.*")])
+        if not fn:
+            return
+        try:
+            with open(fn, newline='', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                c = self.conn.cursor()
+                count=0
+                for row in reader:
+                    sku = row.get("sku") or row.get("SKU") or ""
+                    name = row.get("name") or row.get("Name")
+                    if not name:
+                        continue
+                    price = float(row.get("price") or row.get("unit_price") or 0)
+                    qty = int(float(row.get("qty") or row.get("quantity") or 0))
+                    reorder = int(float(row.get("reorder_level") or row.get("reorder") or 0))
+                    category = row.get("category") or ""
+                    try:
+                        c.execute("INSERT INTO items (sku,name,category,price,qty,reorder_level) VALUES (?,?,?,?,?,?)",
+                                  (sku.strip() or None, name.strip(), category.strip(), price, qty, reorder))
+                        count+=1
+                    except sqlite3.IntegrityError:
+                        try:
+                            if sku:
+                                c.execute("UPDATE items SET name=?,category=?,price=?,qty=?,reorder_level=? WHERE sku=?",
+                                          (name.strip(), category.strip(), price, qty, reorder, sku))
+                                count+=1
+                            else:
+                                c.execute("UPDATE items SET category=?,price=?,qty=?,reorder_level=? WHERE name=?",
+                                          (category.strip(), price, qty, reorder, name))
+                                count+=1
+                        except Exception:
+                            pass
+                self.conn.commit()
+                messagebox.showinfo("Imported", f"Imported/updated {count} items")
+                log_info(f"Imported CSV: {fn}, count={count}")
+                self.refresh_items()
+        except Exception as e:
+            log_err("Import CSV failed")
+            messagebox.showerror("Import failed", str(e))
+
+    def export_inventory_csv(self):
+        fn = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV files","*.csv")])
+        if not fn:
+            return
+        try:
+            c = self.conn.cursor()
+            c.execute("SELECT sku,name,category,price,qty,reorder_level FROM items ORDER BY name")
+            rows = c.fetchall()
+            with open(fn, "w", newline='', encoding='utf-8') as f:
+                w = csv.writer(f)
+                w.writerow(["sku","name","category","price","qty","reorder_level"])
+                for r in rows:
+                    w.writerow(r)
+            messagebox.showinfo("Exported", f"Inventory exported to {fn}")
+            log_info(f"Exported inventory CSV to {fn}")
+        except Exception as e:
+            log_err("Export inventory failed")
+            messagebox.showerror("Error", str(e))
