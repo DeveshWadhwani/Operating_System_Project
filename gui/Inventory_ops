@@ -1,0 +1,86 @@
+def refresh_items(self):
+        q = self.search_var.get().strip().lower()
+        c = self.conn.cursor()
+        if q:
+            like = f"%{q}%"
+            c.execute("SELECT id, sku, name, category, price, qty, reorder_level FROM items WHERE sku LIKE ? OR name LIKE ? OR category LIKE ? ORDER BY name",
+                      (like, like, like))
+        else:
+            c.execute("SELECT id, sku, name, category, price, qty, reorder_level FROM items ORDER BY name")
+        rows = c.fetchall()
+        for r in self.item_tree.get_children():
+            self.item_tree.delete(r)
+        combo_vals=[]
+        self._combomap={}
+        for row in rows:
+            self.item_tree.insert("", tk.END, values=row)
+            display = f"{row[2]} [{row[1]}] ({row[4]:.2f}, {row[5]}pcs)"
+            combo_vals.append(display)
+            self._combomap[display]=row[0]
+        self.item_combo['values']=combo_vals
+        self.status_var.set(f"Loaded {len(rows)} items")
+        self.check_low_stock_visual(rows)
+
+    def check_low_stock_visual(self, rows):
+        low = [r for r in rows if r[5] <= (r[6] or 0)]
+        if low:
+            self.status_var.set(f"Low stock for {len(low)} items. Click 'Low stock report'.")
+        else:
+            self.status_var.set("Inventory OK")
+
+    def add_item_dialog(self):
+        dlg = ItemEditDialog(self.root, title="Add Item")
+        if dlg.result:
+            sku, name, category, price, qty, reorder = dlg.result
+            try:
+                self.add_item(sku, name, category, price, qty, reorder)
+                self.refresh_items()
+                messagebox.showinfo("Added", f"Item '{name}' added")
+            except Exception as e:
+                log_err("Add item failed")
+                messagebox.showerror("Error", str(e))
+
+    def add_item(self, sku, name, category, price, qty, reorder):
+        c = self.conn.cursor()
+        c.execute("INSERT INTO items (sku,name,category,price,qty,reorder_level) VALUES (?, ?, ?, ?, ?, ?)",
+                  (sku.strip() or None, name.strip(), category.strip(), float(price), int(qty), int(reorder)))
+        self.conn.commit()
+        log_info(f"Item added: {name} ({sku})")
+
+    def edit_selected_item(self):
+        sel = self.item_tree.selection()
+        if not sel:
+            messagebox.showinfo("Info", "Select an item to edit.")
+            return
+        vals = self.item_tree.item(sel[0], 'values')
+        item = {"id":vals[0], "sku":vals[1], "name":vals[2], "category":vals[3], "price":vals[4], "qty":vals[5], "reorder":vals[6]}
+        dlg = ItemEditDialog(self.root, title="Edit Item", prefill=item)
+        if dlg.result:
+            sku, name, category, price, qty, reorder = dlg.result
+            try:
+                c = self.conn.cursor()
+                c.execute("UPDATE items SET sku=?, name=?, category=?, price=?, qty=?, reorder_level=? WHERE id=?",
+                          (sku.strip() or None, name.strip(), category.strip(), float(price), int(qty), int(reorder), item["id"]))
+                self.conn.commit()
+                self.refresh_items()
+                log_info(f"Item updated: {name}")
+            except Exception as e:
+                log_err("Edit item failed")
+                messagebox.showerror("Error", str(e))
+
+    def delete_selected_item(self):
+        sel = self.item_tree.selection()
+        if not sel:
+            messagebox.showinfo("Info", "Select an item to delete.")
+            return
+        vals = self.item_tree.item(sel[0], 'values')
+        if messagebox.askyesno("Confirm", f"Delete '{vals[2]}'?"):
+            try:
+                c = self.conn.cursor()
+                c.execute("DELETE FROM items WHERE id=?", (vals[0],))
+                self.conn.commit()
+                self.refresh_items()
+                log_info(f"Item deleted: {vals[2]}")
+            except Exception as e:
+                log_err("Delete item failed")
+                messagebox.showerror("Error", str(e))
