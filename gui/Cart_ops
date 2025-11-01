@@ -1,0 +1,112 @@
+def add_to_cart(self):
+        sel = self.item_combo.get()
+        if not sel:
+            messagebox.showinfo("Info","Select an item")
+            return
+        try:
+            item_id = self._combomap[sel]
+        except Exception:
+            messagebox.showerror("Error","Selection mismatch")
+            return
+        try:
+            qty = int(self.qty_entry.get().strip() or "1")
+            if qty <= 0:
+                raise ValueError()
+        except Exception:
+            messagebox.showerror("Error","Invalid quantity")
+            return
+        try:
+            line_disc = float(self.line_discount_entry.get().strip() or "0")
+        except Exception:
+            messagebox.showerror("Error","Invalid line discount")
+            return
+
+        c = self.conn.cursor()
+        c.execute("SELECT sku,name,price,qty FROM items WHERE id=?", (item_id,))
+        row = c.fetchone()
+        if not row:
+            messagebox.showerror("Error","Item not found")
+            return
+        sku, name, price, stock = row
+        if qty > stock:
+            if not messagebox.askyesno("Confirm", f"Only {stock} in stock. Add anyway?"):
+                return
+        line_total = round(price * qty * (1 - line_disc/100.0),2)
+        entry = {"item_id": item_id, "sku": sku or "", "name": name, "unit": price, "qty": qty, "ldisc": line_disc, "ltotal": line_total}
+        self.cart.append(entry)
+        self.undo_stack.append(("add", entry))
+        self.refresh_cart()
+        self.qty_entry.delete(0,tk.END)
+        self.line_discount_entry.delete(0,tk.END)
+        self.line_discount_entry.insert(0,"0")
+        self.status_var.set(f"Added {qty} x {name}")
+        log_info(f"Cart add: {name} x{qty}")
+
+    def refresh_cart(self):
+        for r in self.cart_tree.get_children():
+            self.cart_tree.delete(r)
+        for it in self.cart:
+            self.cart_tree.insert("", tk.END, values=(it['sku'], it['name'], f"{it['unit']:.2f}", it['qty'], f"{it['ldisc']:.2f}", f"{it['ltotal']:.2f}"))
+        self.recalculate_totals()
+
+    def remove_from_cart(self):
+        sel = self.cart_tree.selection()
+        if not sel:
+            messagebox.showinfo("Info","Select a cart line to remove")
+            return
+        idx = self.cart_tree.index(sel[0])
+        removed = self.cart.pop(idx)
+        self.undo_stack.append(("remove", removed, idx))
+        self.refresh_cart()
+        self.status_var.set(f"Removed {removed['name']}")
+        log_info(f"Cart remove: {removed['name']}")
+
+    def clear_cart(self):
+        if messagebox.askyesno("Confirm","Clear cart?"):
+            self.undo_stack.append(("clear", list(self.cart)))
+            self.cart.clear()
+            self.refresh_cart()
+            self.status_var.set("Cart cleared")
+
+    def undo_action(self):
+        if not self.undo_stack:
+            messagebox.showinfo("Info","Nothing to undo")
+            return
+        action = self.undo_stack.pop()
+        if action[0]=="add":
+            entry = action[1]
+            # remove last matching entry
+            for i in range(len(self.cart)-1, -1, -1):
+                if self.cart[i] is entry:
+                    self.cart.pop(i)
+                    break
+        elif action[0]=="remove":
+            entry = action[1]; idx = action[2]
+            self.cart.insert(idx, entry)
+        elif action[0]=="clear":
+            self.cart = list(action[1])
+        self.refresh_cart()
+        self.status_var.set("Undid last action")
+        log_info("Undid action")
+
+    def recalculate_totals(self):
+        subtotal = sum(it['ltotal'] for it in self.cart)
+        # overall discount
+        disc_val = 0.0
+        ovd = self.overall_discount_entry.get().strip()
+        try:
+            ov = float(ovd) if ovd else 0.0
+        except Exception:
+            ov = 0.0
+        if self.discount_mode_var.get()=="percent":
+            disc_val = subtotal * (ov/100.0)
+        else:
+            disc_val = ov
+        subtotal_after = max(0.0, subtotal - disc_val)
+        try:
+            tax_percent = float(self.tax_var.get().strip() or CONFIG.get("tax_rate_percent",18.0))
+        except Exception:
+            tax_percent = CONFIG.get("tax_rate_percent",18.0)
+        tax = subtotal_after * (tax_percent/100.0)
+        total = round(subtotal_after + tax,2)
+        self.total_var.set(f"{CONFIG.get('currency_symbol','₹')}{total:.2f}")
