@@ -1,0 +1,153 @@
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog
+import sqlite3
+import os
+import csv
+from datetime import datetime, timedelta
+import tempfile
+import webbrowser
+import shutil
+
+# backend imports
+from backend.logger import log_info, log_err
+from backend.config import CONFIG
+from backend.database import init_db, DB_FILE
+
+# dialogs moved to separate file
+from gui.dialogs import ItemEditDialog, ReportDialog, DateRangeDialog, LoginDialog, CreateUserDialog
+
+APP_NAME = "InventoryBillingWin"
+
+class InventoryBillingApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title(f"{APP_NAME} - Windows Edition")
+        self.conn = init_db()
+        self.user = None
+        self.cart = []  # list of dicts
+        self.undo_stack = []
+        self.build_ui()
+        self.refresh_items()
+        self.load_shortcuts()
+
+    # ---------------- UI ----------------
+    def build_ui(self):
+        self.root.geometry("1050x640")
+        main = ttk.Frame(self.root, padding=6)
+        main.pack(fill=tk.BOTH, expand=True)
+
+        # Top: toolbar with login, search, settings
+        top = ttk.Frame(main)
+        top.pack(fill=tk.X)
+        self.login_btn = ttk.Button(top, text="Login", command=self.login_dialog)
+        self.login_btn.pack(side=tk.LEFT)
+        ttk.Button(top, text="Create Admin", command=self.create_admin_dialog).pack(side=tk.LEFT, padx=4)
+        ttk.Button(top, text="Backup DB", command=self.backup_db).pack(side=tk.LEFT, padx=4)
+        ttk.Button(top, text="Restore DB", command=self.restore_db).pack(side=tk.LEFT, padx=4)
+        ttk.Button(top, text="Import CSV", command=self.import_csv).pack(side=tk.LEFT, padx=4)
+        ttk.Button(top, text="Export Inventory CSV", command=self.export_inventory_csv).pack(side=tk.LEFT, padx=4)
+
+        ttk.Label(top, text="Search:").pack(side=tk.LEFT, padx=(12,4))
+        self.search_var = tk.StringVar()
+        self.search_var.trace_add("write", lambda *args: self.refresh_items())
+        self.search_entry = ttk.Entry(top, textvariable=self.search_var, width=30)
+        self.search_entry.pack(side=tk.LEFT)
+
+        ttk.Button(top, text="Low stock report", command=self.low_stock_report).pack(side=tk.RIGHT)
+
+        # Middle split: left inventory, right billing
+        middle = ttk.Panedwindow(main, orient=tk.HORIZONTAL)
+        middle.pack(fill=tk.BOTH, expand=True, pady=6)
+
+        # Left inventory
+        left_frame = ttk.Frame(middle, padding=6)
+        middle.add(left_frame, weight=2)
+        ttk.Label(left_frame, text="Inventory", font=("Segoe UI", 12, "bold")).pack(anchor=tk.W)
+
+        columns = ("id","sku","name","category","price","qty","reorder")
+        self.item_tree = ttk.Treeview(left_frame, columns=columns, show="headings", selectmode="browse")
+        for col, text in zip(columns, ("ID","SKU","Name","Category","Price","Qty","Reorder")):
+            self.item_tree.heading(col, text=text)
+            self.item_tree.column(col, width=80 if col in ("id","sku","price","qty","reorder") else 200)
+        self.item_tree.pack(fill=tk.BOTH, expand=True)
+        self.item_tree.bind("<Double-1>", lambda e: self.edit_selected_item())
+
+        inv_ctrl = ttk.Frame(left_frame)
+        inv_ctrl.pack(fill=tk.X, pady=6)
+        ttk.Button(inv_ctrl, text="Add Item (Ctrl+N)", command=self.add_item_dialog).pack(side=tk.LEFT)
+        ttk.Button(inv_ctrl, text="Edit Selected", command=self.edit_selected_item).pack(side=tk.LEFT, padx=4)
+        ttk.Button(inv_ctrl, text="Delete Selected", command=self.delete_selected_item).pack(side=tk.LEFT, padx=4)
+        ttk.Button(inv_ctrl, text="Refresh", command=self.refresh_items).pack(side=tk.RIGHT)
+
+        # Right billing
+        right_frame = ttk.Frame(middle, padding=6)
+        middle.add(right_frame, weight=3)
+        ttk.Label(right_frame, text="Billing / Cart", font=("Segoe UI", 12, "bold")).pack(anchor=tk.W)
+
+        # Selector
+        sel_frame = ttk.Frame(right_frame)
+        sel_frame.pack(fill=tk.X, pady=(4,8))
+        ttk.Label(sel_frame, text="Item:").pack(side=tk.LEFT)
+        self.item_combo = ttk.Combobox(sel_frame, width=40, state="readonly")
+        self.item_combo.pack(side=tk.LEFT, padx=4)
+        ttk.Label(sel_frame, text="Qty:").pack(side=tk.LEFT, padx=(8,0))
+        self.qty_entry = ttk.Entry(sel_frame, width=6)
+        self.qty_entry.pack(side=tk.LEFT, padx=4)
+        ttk.Label(sel_frame, text="Line Discount (%):").pack(side=tk.LEFT, padx=(8,0))
+        self.line_discount_entry = ttk.Entry(sel_frame, width=6)
+        self.line_discount_entry.insert(0,"0")
+        self.line_discount_entry.pack(side=tk.LEFT, padx=4)
+        ttk.Button(sel_frame, text="Add to Cart (Enter)", command=self.add_to_cart).pack(side=tk.LEFT, padx=6)
+
+        # Cart tree
+        cart_cols = ("sku","name","unit","qty","ldisc","ltotal")
+        self.cart_tree = ttk.Treeview(right_frame, columns=cart_cols, show="headings", height=12)
+        for col, txt in zip(cart_cols, ("SKU","Name","Unit","Qty","LineDisc%","LineTotal")):
+            self.cart_tree.heading(col, text=txt)
+            self.cart_tree.column(col, width=100 if col in ("sku","unit","qty","ldisc","ltotal") else 220)
+        self.cart_tree.pack(fill=tk.BOTH, expand=True)
+        cart_ctrl = ttk.Frame(right_frame)
+        cart_ctrl.pack(fill=tk.X, pady=6)
+        ttk.Button(cart_ctrl, text="Remove Selected", command=self.remove_from_cart).pack(side=tk.LEFT)
+        ttk.Button(cart_ctrl, text="Undo Last Action", command=self.undo_action).pack(side=tk.LEFT, padx=6)
+        ttk.Button(cart_ctrl, text="Clear Cart", command=self.clear_cart).pack(side=tk.LEFT, padx=6)
+
+        # Totals & actions
+        tot_frame = ttk.Frame(right_frame)
+        tot_frame.pack(fill=tk.X, pady=6)
+        ttk.Label(tot_frame, text="Discount overall (% or fixed):").pack(side=tk.LEFT)
+        self.overall_discount_entry = ttk.Entry(tot_frame, width=10)
+        self.overall_discount_entry.insert(0,"0")
+        self.overall_discount_entry.pack(side=tk.LEFT, padx=4)
+        self.discount_mode_var = tk.StringVar(value="percent")
+        ttk.Radiobutton(tot_frame, text="%", variable=self.discount_mode_var, value="percent").pack(side=tk.LEFT)
+        ttk.Radiobutton(tot_frame, text="Fixed", variable=self.discount_mode_var, value="fixed").pack(side=tk.LEFT)
+
+        ttk.Label(tot_frame, text="Tax %:").pack(side=tk.LEFT, padx=(12,0))
+        self.tax_var = tk.StringVar(value=str(CONFIG.get("tax_rate_percent",18.0)))
+        self.tax_entry = ttk.Entry(tot_frame, width=6, textvariable=self.tax_var)
+        self.tax_entry.pack(side=tk.LEFT, padx=4)
+
+        ttk.Label(tot_frame, text="Total:").pack(side=tk.LEFT, padx=(12,0))
+        self.total_var = tk.StringVar(value=f"{CONFIG.get('currency_symbol','₹')}0.00")
+        ttk.Label(tot_frame, textvariable=self.total_var, font=("Segoe UI", 10, "bold")).pack(side=tk.LEFT, padx=(4,0))
+
+        action_frame = ttk.Frame(right_frame)
+        action_frame.pack(fill=tk.X)
+        ttk.Button(action_frame, text="Save Invoice (Ctrl+S)", command=self.save_invoice).pack(side=tk.LEFT)
+        ttk.Button(action_frame, text="Preview/Print Invoice", command=self.preview_invoice).pack(side=tk.LEFT, padx=6)
+        ttk.Button(action_frame, text="Export Invoice CSV", command=self.export_cart_csv).pack(side=tk.LEFT, padx=6)
+        ttk.Button(action_frame, text="Sales Report", command=self.sales_report_dialog).pack(side=tk.RIGHT)
+
+        # Status bar
+        status = ttk.Frame(self.root)
+        status.pack(fill=tk.X)
+        self.status_var = tk.StringVar(value="Welcome")
+        ttk.Label(status, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W).pack(fill=tk.X)
+
+    # ---------------- Shortcuts ----------------
+    def load_shortcuts(self):
+        self.root.bind("<Control-n>", lambda e: self.add_item_dialog())
+        self.root.bind("<Control-s>", lambda e: self.save_invoice())
+        self.root.bind("<Control-b>", lambda e: self.backup_db())
+        self.root.bind("<Return>", lambda e: self.add_to_cart())
