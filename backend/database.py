@@ -10,6 +10,14 @@ def ensure_dir(path):
 
 def hash_password(pw: str) -> str:
     return hashlib.sha256(pw.encode()).hexdigest()
+def parse_money(s):
+    s = str(s).strip()
+    if not s:
+        return 0.0
+    try:
+        return float(s)
+    except Exception:
+        raise ValueError("Invalid money value")    
 
 def load_config():
     default_cfg = {"tax_rate_percent": 18.0, "currency_symbol": "₹"}
