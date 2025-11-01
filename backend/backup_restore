@@ -1,0 +1,28 @@
+ def backup_db(self):
+        fn = filedialog.asksaveasfilename(defaultextension=".db", title="Save DB Backup As", filetypes=[("DB file",".db"),("All files",".*")])
+        if not fn:
+            return
+        try:
+            shutil.copy2(DB_FILE, fn)
+            messagebox.showinfo("Backup", f"Database backed up to {fn}")
+            log_info(f"DB backup to {fn}")
+        except Exception as e:
+            log_err("DB backup failed")
+            messagebox.showerror("Backup failed", str(e))
+
+ def restore_db(self):
+        fn = filedialog.askopenfilename(title="Select DB to restore", filetypes=[("DB file",".db"),("All files",".*")])
+        if not fn:
+            return
+        if not messagebox.askyesno("Confirm", "Restore will overwrite the current DB. Continue?"):
+            return
+        try:
+            self.conn.close()
+            shutil.copy2(fn, DB_FILE)
+            self.conn = init_db()
+            self.refresh_items()
+            messagebox.showinfo("Restored", "Database restored successfully.")
+            log_info(f"DB restored from {fn}")
+        except Exception as e:
+            log_err("DB restore failed")
+            messagebox.showerror("Restore failed", str(e))
