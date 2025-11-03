@@ -7,17 +7,13 @@ from datetime import datetime, timedelta
 import tempfile
 import webbrowser
 import shutil
-
 # backend imports
 from backend.logger import log_info, log_err
 from backend.config import CONFIG
 from backend.database import init_db, DB_FILE
-
 # dialogs moved to separate file
 from gui.dialogs import ItemEditDialog, ReportDialog, DateRangeDialog, LoginDialog, CreateUserDialog
-
 APP_NAME = "InventoryBillingWin"
-
 class InventoryBillingApp:
     def __init__(self, root):
         self.root = root
@@ -68,17 +64,6 @@ class InventoryBillingApp:
         self.item_tree = ttk.Treeview(left_frame, columns=columns, show="headings", selectmode="browse")
         for col, text in zip(columns, ("ID","SKU","Name","Category","Price","Qty","Reorder")):
             self.item_tree.heading(col, text=text)
-            self.item_tree.column(col, width=80 if col in ("id","sku","price","qty","reorder") else 200)
-        self.item_tree.pack(fill=tk.BOTH, expand=True)
-        self.item_tree.bind("<Double-1>", lambda e: self.edit_selected_item())
-
-        inv_ctrl = ttk.Frame(left_frame)
-        inv_ctrl.pack(fill=tk.X, pady=6)
-        ttk.Button(inv_ctrl, text="Add Item (Ctrl+N)", command=self.add_item_dialog).pack(side=tk.LEFT)
-        ttk.Button(inv_ctrl, text="Edit Selected", command=self.edit_selected_item).pack(side=tk.LEFT, padx=4)
-        ttk.Button(inv_ctrl, text="Delete Selected", command=self.delete_selected_item).pack(side=tk.LEFT, padx=4)
-        ttk.Button(inv_ctrl, text="Refresh", command=self.refresh_items).pack(side=tk.RIGHT)
-
         # Right billing
         right_frame = ttk.Frame(middle, padding=6)
         middle.add(right_frame, weight=3)
@@ -92,12 +77,6 @@ class InventoryBillingApp:
         self.item_combo.pack(side=tk.LEFT, padx=4)
         ttk.Label(sel_frame, text="Qty:").pack(side=tk.LEFT, padx=(8,0))
         self.qty_entry = ttk.Entry(sel_frame, width=6)
-        self.qty_entry.pack(side=tk.LEFT, padx=4)
-        ttk.Label(sel_frame, text="Line Discount (%):").pack(side=tk.LEFT, padx=(8,0))
-        self.line_discount_entry = ttk.Entry(sel_frame, width=6)
-        self.line_discount_entry.insert(0,"0")
-        self.line_discount_entry.pack(side=tk.LEFT, padx=4)
-        ttk.Button(sel_frame, text="Add to Cart (Enter)", command=self.add_to_cart).pack(side=tk.LEFT, padx=6)
 
         # Cart tree
         cart_cols = ("sku","name","unit","qty","ldisc","ltotal")
@@ -108,9 +87,6 @@ class InventoryBillingApp:
         self.cart_tree.pack(fill=tk.BOTH, expand=True)
         cart_ctrl = ttk.Frame(right_frame)
         cart_ctrl.pack(fill=tk.X, pady=6)
-        ttk.Button(cart_ctrl, text="Remove Selected", command=self.remove_from_cart).pack(side=tk.LEFT)
-        ttk.Button(cart_ctrl, text="Undo Last Action", command=self.undo_action).pack(side=tk.LEFT, padx=6)
-        ttk.Button(cart_ctrl, text="Clear Cart", command=self.clear_cart).pack(side=tk.LEFT, padx=6)
 
         # Totals & actions
         tot_frame = ttk.Frame(right_frame)
